@@ -1,0 +1,8 @@
+User-agent: *
+Allow: /
+Allow: /blog
+Allow: /faq
+Allow: /features
+Allow: /about
+
+Sitemap: https://imagequalityenhancer.com/sitemap.xml

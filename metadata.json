@@ -1,0 +1,6 @@
+{
+  "name": "ImageQualityEnhancer",
+  "description": "Completely free AI-powered online image enhancement tool that allows you to improve your image quality, sharpness, smoothness, clarity, colors, and resolution.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
