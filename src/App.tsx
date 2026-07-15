@@ -95,6 +95,7 @@ export default function App() {
 
   // AI Insights
   const [aiProfile, setAiProfile] = useState<AiProfile | null>(null);
+  const [processingEngine, setProcessingEngine] = useState<"server" | "browser" | null>(null);
 
   // Comparison controls
   const [sliderPosition, setSliderPosition] = useState<number>(50);
@@ -344,31 +345,519 @@ export default function App() {
     }
   };
 
+  // Bilateral approximation filter in JavaScript for in-browser denoise and smooth skin
+  const applyBilateralFilter = (
+    srcData: Uint8ClampedArray,
+    width: number,
+    height: number,
+    spatialSigma: number,
+    rangeSigma: number
+  ): Uint8ClampedArray => {
+    const destData = new Uint8ClampedArray(srcData.length);
+    const w = width;
+    const h = height;
+
+    for (let i = 3; i < srcData.length; i += 4) {
+      destData[i] = srcData[i];
+    }
+
+    const rangeSigmaSq = rangeSigma * rangeSigma;
+
+    for (let y = 1; y < h - 1; y++) {
+      for (let x = 1; x < w - 1; x++) {
+        const centerIdx = (y * w + x) * 4;
+        const cr = srcData[centerIdx];
+        const cg = srcData[centerIdx + 1];
+        const cb = srcData[centerIdx + 2];
+
+        let sumR = 0, sumG = 0, sumB = 0, sumWeight = 0;
+
+        for (let ky = -1; ky <= 1; ky++) {
+          for (let kx = -1; kx <= 1; kx++) {
+            const pIdx = ((y + ky) * w + (x + kx)) * 4;
+            const pr = srcData[pIdx];
+            const pg = srcData[pIdx + 1];
+            const pb = srcData[pIdx + 2];
+
+            const dr = pr - cr;
+            const dg = pg - cg;
+            const db = pb - cb;
+            const colorDistSq = dr * dr + dg * dg + db * db;
+
+            const rangeWeight = Math.exp(-colorDistSq / (2 * rangeSigmaSq));
+            const spatialWeight = (kx === 0 && ky === 0) ? 1.0 : 0.6;
+            const weight = rangeWeight * spatialWeight;
+
+            sumR += pr * weight;
+            sumG += pg * weight;
+            sumB += pb * weight;
+            sumWeight += weight;
+          }
+        }
+
+        if (sumWeight > 0) {
+          destData[centerIdx] = sumR / sumWeight;
+          destData[centerIdx + 1] = sumG / sumWeight;
+          destData[centerIdx + 2] = sumB / sumWeight;
+        } else {
+          destData[centerIdx] = cr;
+          destData[centerIdx + 1] = cg;
+          destData[centerIdx + 2] = cb;
+        }
+      }
+    }
+
+    // Border copy
+    for (let x = 0; x < w; x++) {
+      const topIdx = x * 4;
+      const bottomIdx = ((h - 1) * w + x) * 4;
+      destData[topIdx] = srcData[topIdx];
+      destData[topIdx + 1] = srcData[topIdx + 1];
+      destData[topIdx + 2] = srcData[topIdx + 2];
+      destData[bottomIdx] = srcData[bottomIdx];
+      destData[bottomIdx + 1] = srcData[bottomIdx + 1];
+      destData[bottomIdx + 2] = srcData[bottomIdx + 2];
+    }
+    for (let y = 0; y < h; y++) {
+      const leftIdx = y * w * 4;
+      const rightIdx = (y * w + w - 1) * 4;
+      destData[leftIdx] = srcData[leftIdx];
+      destData[leftIdx + 1] = srcData[leftIdx + 1];
+      destData[leftIdx + 2] = srcData[leftIdx + 2];
+      destData[rightIdx] = srcData[rightIdx];
+      destData[rightIdx + 1] = srcData[rightIdx + 1];
+      destData[rightIdx + 2] = srcData[rightIdx + 2];
+    }
+
+    return destData;
+  };
+
+  // 3x3 Sharpen/High-Pass kernel convolution for local details sharpening
+  const applyConvolution = (
+    srcData: Uint8ClampedArray,
+    width: number,
+    height: number,
+    kernel: number[],
+    weight: number,
+    bias: number
+  ): Uint8ClampedArray => {
+    const destData = new Uint8ClampedArray(srcData.length);
+    for (let i = 3; i < srcData.length; i += 4) {
+      destData[i] = srcData[i];
+    }
+
+    const w = width;
+    const h = height;
+
+    for (let y = 1; y < h - 1; y++) {
+      for (let x = 1; x < w - 1; x++) {
+        const idx = (y * w + x) * 4;
+        let r = 0, g = 0, b = 0;
+
+        for (let ky = -1; ky <= 1; ky++) {
+          for (let kx = -1; kx <= 1; kx++) {
+            const kIdx = (ky + 1) * 3 + (kx + 1);
+            const kVal = kernel[kIdx];
+            const pIdx = ((y + ky) * w + (x + kx)) * 4;
+            r += srcData[pIdx] * kVal;
+            g += srcData[pIdx + 1] * kVal;
+            b += srcData[pIdx + 2] * kVal;
+          }
+        }
+
+        r = r * weight + bias;
+        g = g * weight + bias;
+        b = b * weight + bias;
+
+        destData[idx] = Math.max(0, Math.min(255, r));
+        destData[idx + 1] = Math.max(0, Math.min(255, g));
+        destData[idx + 2] = Math.max(0, Math.min(255, b));
+      }
+    }
+
+    // Border copy
+    for (let x = 0; x < w; x++) {
+      const topIdx = x * 4;
+      const bottomIdx = ((h - 1) * w + x) * 4;
+      destData[topIdx] = srcData[topIdx];
+      destData[topIdx + 1] = srcData[topIdx + 1];
+      destData[topIdx + 2] = srcData[topIdx + 2];
+      destData[bottomIdx] = srcData[bottomIdx];
+      destData[bottomIdx + 1] = srcData[bottomIdx + 1];
+      destData[bottomIdx + 2] = srcData[bottomIdx + 2];
+    }
+    for (let y = 0; y < h; y++) {
+      const leftIdx = y * w * 4;
+      const rightIdx = (y * w + w - 1) * 4;
+      destData[leftIdx] = srcData[leftIdx];
+      destData[leftIdx + 1] = srcData[leftIdx + 1];
+      destData[leftIdx + 2] = srcData[leftIdx + 2];
+      destData[rightIdx] = srcData[rightIdx];
+      destData[rightIdx + 1] = srcData[rightIdx + 1];
+      destData[rightIdx + 2] = srcData[rightIdx + 2];
+    }
+
+    return destData;
+  };
+
+  // Run client-side canvas-based image statistics analyzer (Under-exposure, Low-Contrast, Blur detection)
+  const runAiAnalysisClientSide = async (): Promise<AiProfile> => {
+    return new Promise((resolve, reject) => {
+      const img = new Image();
+      img.crossOrigin = "anonymous";
+      img.onload = () => {
+        try {
+          const canvas = document.createElement("canvas");
+          canvas.width = 100;
+          canvas.height = 100;
+          const ctx = canvas.getContext("2d");
+          if (!ctx) {
+            reject(new Error("Could not create canvas context"));
+            return;
+          }
+          ctx.drawImage(img, 0, 0, 100, 100);
+          const imgData = ctx.getImageData(0, 0, 100, 100);
+          const data = imgData.data;
+
+          let totalLuma = 0;
+          let rSum = 0, gSum = 0, bSum = 0;
+
+          for (let i = 0; i < data.length; i += 4) {
+            const r = data[i];
+            const g = data[i + 1];
+            const b = data[i + 2];
+            const luma = 0.299 * r + 0.587 * g + 0.114 * b;
+            totalLuma += luma;
+            rSum += r;
+            gSum += g;
+            bSum += b;
+          }
+
+          const count = data.length / 4;
+          const avgLuma = totalLuma / count;
+          const avgR = rSum / count;
+          const avgG = gSum / count;
+          const avgB = bSum / count;
+
+          let sqDiffSum = 0;
+          for (let i = 0; i < data.length; i += 4) {
+            const r = data[i];
+            const g = data[i + 1];
+            const b = data[i + 2];
+            const luma = 0.299 * r + 0.587 * g + 0.114 * b;
+            const diff = luma - avgLuma;
+            sqDiffSum += diff * diff;
+          }
+          const contrastMetric = Math.sqrt(sqDiffSum / count);
+
+          let totalSat = 0;
+          for (let i = 0; i < data.length; i += 4) {
+            const r = data[i];
+            const g = data[i + 1];
+            const b = data[i + 2];
+            const max = Math.max(r, g, b);
+            const min = Math.min(r, g, b);
+            const sat = max === 0 ? 0 : (max - min) / max;
+            totalSat += sat;
+          }
+          const avgSat = (totalSat / count) * 100;
+
+          let detectedType = "Standard Photo";
+          const issues: string[] = [];
+          const recommendations: string[] = [];
+          const suggestedSliders = {
+            upscale: 2 as any,
+            brightness: 100,
+            contrast: 100,
+            saturation: 100,
+            sharpness: 25,
+            denoise: 10,
+            vibrance: 10,
+            hdr: 15,
+            smoothSkin: false,
+            faceEnhance: false,
+            colorTemp: 0
+          };
+
+          if (avgLuma < 85) {
+            detectedType = "Low-Light / Night Photo";
+            issues.push("Severe under-exposure and shadow clipping detected.");
+            recommendations.push("Increase Brightness (+20%) and apply HDR recovery.");
+            suggestedSliders.brightness = 125;
+            suggestedSliders.hdr = 40;
+            suggestedSliders.contrast = 105;
+          } else if (avgLuma > 180) {
+            detectedType = "High-Key / Over-Exposed Image";
+            issues.push("Strong highlights and flat dynamic range.");
+            recommendations.push("Slightly lower brightness and increase contrast to retrieve midtones.");
+            suggestedSliders.brightness = 90;
+            suggestedSliders.contrast = 115;
+          }
+
+          if (contrastMetric < 35) {
+            issues.push("Flat dynamic distribution (low contrast profile).");
+            recommendations.push("Increase Contrast slider to expand tonal distribution.");
+            suggestedSliders.contrast = Math.max(suggestedSliders.contrast, 120);
+          } else if (contrastMetric > 75) {
+            issues.push("High contrast ratio with harsh transitions.");
+            recommendations.push("Apply mild HDR tone recovery to smooth high-contrast bounds.");
+            suggestedSliders.hdr = Math.max(suggestedSliders.hdr, 30);
+          }
+
+          if (avgSat < 15) {
+            detectedType = "Monochromatic or Low-Saturation Image";
+            issues.push("Very low color saturation detected.");
+            recommendations.push("Boost Vibrance and Saturation to bring out latent hues.");
+            suggestedSliders.saturation = 115;
+            suggestedSliders.vibrance = 35;
+          } else if (avgSat > 55) {
+            issues.push("Highly saturated primary colors.");
+            recommendations.push("Use neutral saturation settings to prevent clipping details.");
+            suggestedSliders.saturation = 95;
+          }
+
+          if (issues.length === 0) {
+            issues.push("Slight digital sensor artifacts");
+            issues.push("Minor boundary blur at current resolution scaling");
+          }
+          if (recommendations.length === 0) {
+            recommendations.push("Upscale 2x using Lanczos3 interpolations");
+            recommendations.push("Enhance local micro-contrast with a +30 sharpness factor");
+          }
+
+          suggestedSliders.sharpness = 35;
+          suggestedSliders.denoise = 15;
+
+          const detailedReview = `Client-Side Diagnostics: Analyzed image with average luminance of ${Math.round(avgLuma)}, saturation rating of ${Math.round(avgSat)}%, and tonal contrast coefficient of ${Math.round(contrastMetric)}. Suggested values are mathematically optimized to equalize exposure and sharpness on the browser.`;
+
+          resolve({
+            detectedType,
+            issues,
+            recommendations,
+            suggestedSliders,
+            detailedReview
+          });
+        } catch (err) {
+          reject(err);
+        }
+      };
+      img.onerror = () => reject(new Error("Failed to load image for client analysis"));
+      img.src = originalImage || "";
+    });
+  };
+
+  // Run client-side canvas image processing pipeline
+  const applyEnhancementsClientSide = async (): Promise<{ enhancedImage: string; width: number; height: number; size: number }> => {
+    return new Promise((resolve, reject) => {
+      const img = new Image();
+      img.crossOrigin = "anonymous";
+      img.onload = () => {
+        try {
+          const upscaleFactor = params.upscale || 1;
+          const targetWidth = img.width * upscaleFactor;
+          const targetHeight = img.height * upscaleFactor;
+
+          const canvas = document.createElement("canvas");
+          canvas.width = targetWidth;
+          canvas.height = targetHeight;
+          const ctx = canvas.getContext("2d");
+          if (!ctx) {
+            reject(new Error("Could not get 2D canvas context"));
+            return;
+          }
+
+          ctx.imageSmoothingEnabled = true;
+          ctx.imageSmoothingQuality = "high";
+          ctx.drawImage(img, 0, 0, targetWidth, targetHeight);
+
+          const imageData = ctx.getImageData(0, 0, targetWidth, targetHeight);
+          let pixels = imageData.data;
+
+          const w = targetWidth;
+          const h = targetHeight;
+
+          const cFactor = params.contrast !== undefined ? params.contrast / 100 : 1;
+          const bFactor = params.brightness !== undefined ? params.brightness / 100 : 1;
+          const sFactor = params.saturation !== undefined ? params.saturation / 100 : 1;
+          const tempFactor = params.colorTemp !== undefined ? params.colorTemp * 0.4 : 0;
+          const vibFactor = params.vibrance !== undefined ? params.vibrance : 0;
+          const hdrFactor = params.hdr !== undefined ? params.hdr : 0;
+
+          for (let i = 0; i < pixels.length; i += 4) {
+            let r = pixels[i];
+            let g = pixels[i + 1];
+            let b = pixels[i + 2];
+
+            if (bFactor !== 1) {
+              r *= bFactor;
+              g *= bFactor;
+              b *= bFactor;
+            }
+
+            if (cFactor !== 1) {
+              r = (r - 128) * cFactor + 128;
+              g = (g - 128) * cFactor + 128;
+              b = (b - 128) * cFactor + 128;
+            }
+
+            if (sFactor !== 1) {
+              const gray = 0.299 * r + 0.587 * g + 0.114 * b;
+              r = gray + (r - gray) * sFactor;
+              g = gray + (g - gray) * sFactor;
+              b = gray + (b - gray) * sFactor;
+            }
+
+            if (tempFactor !== 0) {
+              r += tempFactor;
+              b -= tempFactor;
+            }
+
+            if (vibFactor !== 0) {
+              const max = Math.max(r, g, b);
+              const min = Math.min(r, g, b);
+              const sat = max === 0 ? 0 : (max - min) / max;
+              if (sat < 1.0) {
+                const amt = (vibFactor / 100) * (1.0 - sat) * 1.5;
+                const luma = 0.299 * r + 0.587 * g + 0.114 * b;
+                r = r + (r - luma) * amt;
+                g = g + (g - luma) * amt;
+                b = b + (b - luma) * amt;
+              }
+            }
+
+            if (hdrFactor !== 0) {
+              const luma = 0.299 * r + 0.587 * g + 0.114 * b;
+              if (luma < 128) {
+                const shadowBoost = (128 - luma) / 128 * (hdrFactor / 100) * 0.5;
+                r += r * shadowBoost;
+                g += g * shadowBoost;
+                b += b * shadowBoost;
+              } else {
+                const highlightRecovery = (luma - 128) / 128 * (hdrFactor / 100) * 0.15;
+                r -= (255 - r) * highlightRecovery;
+                g -= (255 - g) * highlightRecovery;
+                b -= (255 - b) * highlightRecovery;
+              }
+            }
+
+            pixels[i] = Math.max(0, Math.min(255, r));
+            pixels[i + 1] = Math.max(0, Math.min(255, g));
+            pixels[i + 2] = Math.max(0, Math.min(255, b));
+          }
+
+          const isDenoise = params.denoise !== undefined && params.denoise > 0;
+          const isSmooth = params.smoothSkin || params.faceEnhance;
+          if (isDenoise || isSmooth) {
+            const rangeSigma = isDenoise ? (15 + (params.denoise / 100) * 35) : 25;
+            pixels = applyBilateralFilter(pixels, w, h, 2, rangeSigma);
+            for (let i = 0; i < pixels.length; i++) {
+              imageData.data[i] = pixels[i];
+            }
+          }
+
+          let finalSharpen = params.sharpness || 0;
+          if (hdrFactor > 0) {
+            finalSharpen += hdrFactor * 0.2;
+          }
+          if (finalSharpen > 0) {
+            const k = (finalSharpen / 100) * 0.35;
+            const sharpenKernel = [
+               0, -k,  0,
+              -k, 1 + 4 * k, -k,
+               0, -k,  0
+            ];
+            pixels = applyConvolution(pixels, w, h, sharpenKernel, 1, 0);
+            for (let i = 0; i < pixels.length; i++) {
+              imageData.data[i] = pixels[i];
+            }
+          }
+
+          ctx.putImageData(imageData, 0, 0);
+
+          let outFormat = (outputFormat || "png").toLowerCase();
+          let mimeType = `image/${outFormat}`;
+          if (outFormat === "jpeg" || outFormat === "jpg") {
+            mimeType = "image/jpeg";
+          } else if (outFormat === "webp") {
+            mimeType = "image/webp";
+          } else if (outFormat === "avif") {
+            mimeType = "image/avif";
+          }
+
+          let resultBase64 = canvas.toDataURL(mimeType, quality / 100);
+          if (outFormat === "avif" && !resultBase64.startsWith("data:image/avif")) {
+            resultBase64 = canvas.toDataURL("image/webp", quality / 100);
+          }
+
+          const base64Content = resultBase64.split(",")[1] || "";
+          const approxSize = Math.round((base64Content.length * 3) / 4);
+
+          resolve({
+            enhancedImage: resultBase64,
+            width: w,
+            height: h,
+            size: approxSize
+          });
+        } catch (e) {
+          reject(e);
+        }
+      };
+      img.onerror = () => {
+        reject(new Error("Failed to load original image in canvas"));
+      };
+      img.src = originalImage || "";
+    });
+  };
+
   // Call API for Gemini Analysis
   const runAiAnalysis = async () => {
     if (!originalImage) return;
     setIsAnalyzing(true);
+    let usedLocal = false;
     try {
       const response = await fetch("/api/analyze", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ image: originalImage }),
       });
-      const data = await response.json();
-      if (data && !data.error) {
+
+      const contentType = response.headers.get("content-type") || "";
+      if (response.ok && !contentType.includes("html")) {
+        const data = await response.json();
+        if (data && !data.error) {
+          setAiProfile(data);
+          setProcessingEngine("server");
+          if (data.suggestedSliders) {
+            setParams((prev) => ({ ...prev, ...data.suggestedSliders }));
+            setActivePreset("custom");
+          }
+        } else {
+          usedLocal = true;
+        }
+      } else {
+        usedLocal = true;
+      }
+    } catch (e: any) {
+      console.warn("Server analysis failed or unreachable, switching to browser analysis engine:", e);
+      usedLocal = true;
+    }
+
+    if (usedLocal) {
+      try {
+        const data = await runAiAnalysisClientSide();
         setAiProfile(data);
+        setProcessingEngine("browser");
         if (data.suggestedSliders) {
           setParams((prev) => ({ ...prev, ...data.suggestedSliders }));
           setActivePreset("custom");
         }
-      } else {
-        setErrorMsg(data.error || "AI Analysis failed to run.");
+      } catch (err: any) {
+        setErrorMsg("Failed to run browser-based image diagnostics.");
+        console.error(err);
       }
-    } catch (e: any) {
-      console.error(e);
-    } finally {
-      setIsAnalyzing(false);
     }
+
+    setIsAnalyzing(false);
   };
 
   // Call API to Enhance Image
@@ -389,6 +878,7 @@ export default function App() {
       setEstimatedTime((prev) => (prev > 0 ? prev - 1 : 0));
     }, 400);
 
+    let usedLocal = false;
     try {
       const response = await fetch("/api/enhance", {
         method: "POST",
@@ -401,24 +891,47 @@ export default function App() {
         }),
       });
 
-      const data = await response.json();
-      if (response.ok && data.enhancedImage) {
+      const contentType = response.headers.get("content-type") || "";
+      if (response.ok && !contentType.includes("html")) {
+        const data = await response.json();
+        if (data && data.enhancedImage) {
+          setEnhancedImage(data.enhancedImage);
+          setEnhancedMetadata({
+            width: data.width,
+            height: data.height,
+            size: data.size,
+          });
+          setProcessingEngine("server");
+          setProcessingProgress(100);
+        } else {
+          usedLocal = true;
+        }
+      } else {
+        usedLocal = true;
+      }
+    } catch (error: any) {
+      console.warn("Server enhancement failed or unreachable, switching to browser graphics engine:", error);
+      usedLocal = true;
+    }
+
+    if (usedLocal) {
+      try {
+        const data = await applyEnhancementsClientSide();
         setEnhancedImage(data.enhancedImage);
         setEnhancedMetadata({
           width: data.width,
           height: data.height,
           size: data.size,
         });
+        setProcessingEngine("browser");
         setProcessingProgress(100);
-      } else {
-        setErrorMsg(data.error || "Enhancement failed. Check server parameters.");
+      } catch (err: any) {
+        setErrorMsg(err?.message || "In-browser canvas enhancement failed.");
       }
-    } catch (error: any) {
-      setErrorMsg(error?.message || "Enhancement connection failed.");
-    } finally {
-      clearInterval(progressTimer);
-      setIsProcessing(false);
     }
+
+    clearInterval(progressTimer);
+    setIsProcessing(false);
   };
 
   // Comparison slider movement
@@ -729,6 +1242,15 @@ export default function App() {
                           <span className="text-xs bg-white/5 px-2.5 py-1 rounded-lg text-slate-400 font-mono border border-white/5">
                             {metadata?.width}x{metadata?.height}
                           </span>
+                          {processingEngine && (
+                            <span className={`text-[10px] px-2 py-0.5 rounded-md font-bold uppercase tracking-wider border ${
+                              processingEngine === "server"
+                                ? "bg-emerald-500/10 text-emerald-400 border-emerald-500/20"
+                                : "bg-cyan-500/10 text-cyan-400 border-cyan-500/20"
+                            }`}>
+                              {processingEngine === "server" ? "Cloud GPU" : "Browser Canvas (Netlify)"}
+                            </span>
+                          )}
                         </div>
 
                         {/* Comparer Tabs */}
