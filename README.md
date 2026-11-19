@@ -186,3 +186,6 @@ Submits image bytes to Gemini Vision to run deep deficiency checks and predict o
 ## 👨‍💻 Contributing and Licensing
 
 This project is maintained by the **ImageQualityEnhancer collective**. All software is open-source under the Apache-2.0 license.
+
+Read more about my projects on https://neemii.dev/projects/
+
